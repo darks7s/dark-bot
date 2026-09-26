@@ -1,0 +1,674 @@
+// ═══════════════════════════════════════════════════════
+// ⚡ DARK BOT - Main Entry
+// ═══════════════════════════════════════════════════════
+
+import makeWASocket, {
+  useMultiFileAuthState,
+  DisconnectReason,
+  fetchLatestBaileysVersion
+} from '@whiskeysockets/baileys'
+import pkg from 'baileys_helper'
+const { sendInteractiveMessage } = pkg
+import { Boom } from '@hapi/boom'
+import pino from 'pino'
+import qrcode from 'qrcode-terminal'
+import fs from 'fs'
+import path from 'path'
+import { fileURLToPath } from 'url'
+
+import { groupInfo, mentionAll, warnMember, unwarnMember, listWarns, deleteMessage, cleanup, pardon, hiddenMention } from './admin2.js'
+import { checkMessage, toggleProtection } from './protection.js'
+import { COMMANDS, matchCommand, getSectionContent, NOT_OWNER_MSG } from './commands.js'
+import { playDice, playGuess, playRPS, playXO, playWord, playRoulette, playCards, handleGameReply } from './games.js'
+import { decorateText, reverseText, calcExpression, randomQuote, randomJoke, randomFact } from './tools.js'
+import { handleWelcome, handleWelcomeToggle, setWelcomeMessage, getWelcomeMessage } from './welcome.js'
+import { OWNER_NUMBER, BOT_NAME, SESSION_DIR, OWNER_CONTACT, OWNER_NAME, CHANNEL_LINK } from './config.js'
+import { isAdmin, isBotAdmin, getMentioned, promoteMember, demoteMember, muteGroup, unmuteGroup, tagAll, getGroupLink } from './admin.js'
+import { handleInstall, activeBots } from './subbot.js'
+import { playMusic, searchMusic, downloadSong } from './music.js'
+import { downloadTikTokVideo, downloadTikTokAudio } from './tiktok.js'
+import { searchWeb } from './search.js'
+import { handleSpam, unblockUser, getBlockedList, incrementMessages, incrementCommands, addGroup, addUser, getStats } from './antispam.js'
+import { askAI, generateImage, translate, randomAnimeImage } from './ai.js'
+import { revealMedia, getProfile } from './fun.js'
+import { makeSticker } from './sticker.js'
+
+const logger = pino({ level: 'silent' })
+const __dirname = path.dirname(fileURLToPath(import.meta.url))
+
+if (!global.db) global.db = { data: { chats: {}, users: {} } }
+if (!global.db.data.chats) global.db.data.chats = {}
+if (!global.mutedUsers) global.mutedUsers = new Map()
+const BOT_IMAGES = [
+  'https://i.postimg.cc/bJbxZXcr/131707.jpg',
+  'https://i.postimg.cc/V6MqJyQk/46d53e6f92fada9b3df1a260f3b27b7a.jpg',
+  'https://i.postimg.cc/25gdjkJB/billie-eilish-wallpaper-photos-enhanced-4k-link-below-v0-0y3re0av9xag1.png',
+  'https://i.postimg.cc/Y9g6vcK2/How-ZDj.jpg',
+  'https://i.postimg.cc/DzRQfvD7/images-(10).jpg',
+  'https://i.postimg.cc/DZsrSVkm/images-(6).jpg',
+  'https://i.postimg.cc/yN2h615k/images-(8).jpg',
+  'https://i.postimg.cc/0QmYzgRK/unnamed.png',
+  'https://i.postimg.cc/fT5xtjFd/2118163-1080x1920-mobile-1080p-dark-wallpaper.jpg',
+  'https://i.postimg.cc/NfQ6jPN4/berserk-guts-dark-wallpaper-preview.jpg',
+  'https://i.postimg.cc/65zd2LSv/HQw-FUlv-XIAAB2ss.webp',
+  'https://i.postimg.cc/MKz7prsY/images-(7).jpg',
+  'https://i.postimg.cc/RVv7ZbPL/images-(9).jpg',
+  'https://i.postimg.cc/zXqCGPdp/lk9yb-G.png',
+  'https://i.postimg.cc/5NfB2kPg/thumb-1920-973389.jpg'
+]
+function getRandomImage() {
+  return BOT_IMAGES[Math.floor(Math.random() * BOT_IMAGES.length)]
+}
+
+function formatUptime() {
+  const u = process.uptime()
+  const h = Math.floor(u / 3600)
+  const m = Math.floor((u % 3600) / 60)
+  const s = Math.floor(u % 60)
+  return h + 'س ' + m + 'د ' + s + 'ث'
+}
+
+async function getCatImage() {
+  try {
+    const res = await fetch('https://api.thecatapi.com/v1/images/search')
+    const data = await res.json()
+    return data[0]?.url || null
+  } catch (e) { return null }
+}
+
+async function getProfilePic(sock, jid) {
+  try { return await sock.profilePictureUrl(jid, 'image') } catch (e) { return null }
+}
+
+async function getGroupDesc(sock, from) {
+  try {
+    const metadata = await sock.groupMetadata(from)
+    return metadata.desc || 'مفيش وصف'
+  } catch (e) { return 'مفيش وصف' }
+}
+
+async function sendListMessage(sock, from, msg, title, description, sections, buttonText = '📋 عرض الأقسام') {
+  try {
+    await sendInteractiveMessage(sock, from, {
+      text: title,
+      footer: description,
+      interactiveButtons: [
+        {
+          name: 'single_select',
+          buttonParamsJson: JSON.stringify({ title: buttonText, sections: sections })
+        }
+      ]
+    }, { quoted: msg })
+    return true
+  } catch (e) {
+    console.log('❌ فشل List:', e.message)
+    return false
+  }
+}
+
+// ═══ الأقسام (قائمة موحدة) ═══
+function getMenuSections() {
+  return [
+    {
+      title: '🛡️ الأقسام الرئيسية',
+      rows: [
+        { title: '🛡️ قسم الأدمن', id: 'sec_admin', description: 'أوامر الإدارة' },
+        { title: '🔒 قسم الحماية', id: 'sec_protection', description: 'حماية الجروب' },
+        { title: '👑 قسم المطور', id: 'sec_owner', description: 'أوامر المطور' }
+      ]
+    },
+    {
+      title: '🎬 الوسائط والذكاء',
+      rows: [
+        { title: '🎵 قسم الوسائط', id: 'sec_media', description: 'تحميل أغاني وفيديو' },
+        { title: '🤖 قسم الذكاء', id: 'sec_ai', description: 'AI وترجمة' },
+        { title: '🎎 قسم الترفيه', id: 'sec_fun', description: 'صور وأنمي' }
+      ]
+    },
+    {
+      title: '🎮 الترفيه والأدوات',
+      rows: [
+        { title: '🎮 قسم الألعاب', id: 'sec_games', description: 'ألعاب وتحديات' },
+        { title: '🛠️ قسم الأدوات', id: 'sec_tools', description: 'أدوات مفيدة' },
+        { title: '🎯 قسم النقاط', id: 'sec_points', description: 'نقاط الأعضاء' }
+      ]
+    },
+    {
+      title: '⚡ خدمات البوت',
+      rows: [
+        { title: '🤖 قسم البوتات', id: 'sec_subbots', description: 'بوتات فرعية' },
+        { title: '🚫 قسم السبام', id: 'sec_antispam', description: 'حظر السبام' },
+        { title: '📢 القناة الرسمية', id: 'channel_link', description: 'قناة البوت' },
+        { title: '👑 مراسلة المطور', id: 'owner_info', description: 'تواصل مع المطور' }
+      ]
+    }
+  ]
+}
+
+async function startBot() {
+  console.log('\n🚀 جاري بدء ' + BOT_NAME + '...\n')
+  const { state, saveCreds } = await useMultiFileAuthState(SESSION_DIR)
+  const { version } = await fetchLatestBaileysVersion()
+  const sock = makeWASocket({
+    version,
+    logger,
+    auth: state,
+    browser: [BOT_NAME, 'Chrome', '2.0.0'],
+    markOnlineOnConnect: true,
+    syncFullHistory: false,
+    generateHighQualityLinkPreview: false
+  })
+
+  sock.ev.on('creds.update', saveCreds)
+  let qrShown = false
+
+  sock.ev.on('connection.update', async (update) => {
+    const { connection, lastDisconnect, qr } = update
+    if (qr && !sock.authState.creds.registered && !qrShown) {
+      qrShown = true
+      console.log('\n📱 امسح QR Code:\n')
+      qrcode.generate(qr, { small: true })
+    }
+    if (connection === 'close') {
+      const reason = new Boom(lastDisconnect?.error)?.output?.statusCode
+      console.log('⚠️ انقطع الاتصال - السبب: ' + reason)
+      if (reason !== DisconnectReason.loggedOut) setTimeout(() => startBot(), 5000)
+      else console.log('❌ تم تسجيل الخروج')
+    } else if (connection === 'open') {
+      console.log('\n✅ ' + BOT_NAME + ' شغال!')
+      console.log('📱 ' + sock.user.id + '\n')
+    }
+  })
+
+  sock.ev.on('group-participants.update', async (event) => {
+    try { await handleWelcome(sock, event, global.db) } catch (e) {}
+  })
+
+  sock.ev.on('messages.upsert', async ({ messages, type }) => {
+    if (type !== 'notify') return
+    const msg = messages[0]
+    if (!msg.message) return
+    const from = msg.key.remoteJid
+    const isGroup = from.endsWith('@g.us')
+
+    let text = msg.message.conversation
+      || msg.message.extendedTextMessage?.text
+      || msg.message.buttonsResponseMessage?.selectedButtonId
+      || ''
+
+    let buttonId = msg.message?.buttonsResponseMessage?.selectedButtonId
+      || msg.message?.listResponseMessage?.singleSelectReply?.selectedRowId
+      || msg.message?.interactiveResponseMessage?.nativeFlowResponseMessage?.paramsJson
+
+    if (buttonId && typeof buttonId === 'string' && buttonId.startsWith('{')) {
+      try {
+        const parsed = JSON.parse(buttonId)
+        buttonId = parsed.id || buttonId
+      } catch (e) {}
+    }
+
+    if (typeof text !== 'string') text = ''
+    if (typeof buttonId !== 'string') buttonId = ''
+
+    if (!text && !buttonId) return
+
+    const senderJid = msg.key.participant || msg.key.remoteJid
+    const senderNum = senderJid.split('@')[0].split(':')[0]
+    const isOwner = senderNum === OWNER_NUMBER || msg.key.fromMe
+
+    console.log('📩 ' + senderNum + ': ' + (text || buttonId))
+
+    incrementMessages()
+    if (isGroup) addGroup(from)
+    addUser(senderJid)
+
+    try {
+      // معالجة الأزرار
+      if (buttonId) {
+        if (buttonId.startsWith('song_')) {
+          const index = parseInt(buttonId.replace('song_', ''))
+          return downloadSong(sock, from, msg, index)
+        }
+
+        if (buttonId === 'show_sections' || buttonId === 'main_sections') {
+          await sendListMessage(
+            sock, from, msg,
+            '📂 *الأقسام الرئيسية*\n\n📌 اختر القسم:',
+            'DARK BOT © 2026',
+            getMenuSections(),
+            '📋 اختر قسم'
+          )
+          return
+        }
+
+        if (buttonId.startsWith('sec_')) {
+          const sec = buttonId.replace('sec_', '')
+          return sock.sendMessage(from, { text: getSectionContent(sec) }, { quoted: msg })
+        }
+
+        if (buttonId === 'install_bot') {
+          return sock.sendMessage(from, { text: '⚡ *تنصيب بوت*\n\nابعت رقمك مع كود الدولة\n⚠️ بدون + وبدون 0\n\n📌 مثال: 201068818526' }, { quoted: msg })
+        }
+        if (buttonId === 'channel_link') {
+          return sock.sendMessage(from, { text: '📢 *قناة البوت*\n\n🔗 ' + CHANNEL_LINK }, { quoted: msg })
+        }
+        if (buttonId === 'owner_info') {
+          return sock.sendMessage(from, { text: '👑 المطور: DARK' }, { quoted: msg })
+        }
+        return
+      }
+
+      // الحماية
+      if (isGroup && !isOwner) {
+        try {
+          const userIsAdmin = await isAdmin(sock, from, senderJid)
+          const chat = global.db.data.chats[from] || {}
+          const blocked = await checkMessage(sock, msg, from, isGroup, isOwner, userIsAdmin, chat)
+          if (blocked) return
+        } catch (e) {}
+      }
+
+      // الكتم
+      if (global.mutedUsers.has(senderJid) && !isOwner) {
+        try {
+          await sock.sendMessage(from, { delete: msg.key })
+          await sock.sendMessage(from, { text: '🤐 *اسكت يا @' + senderNum + '*', mentions: [senderJid] })
+        } catch (e) {}
+        return
+      }
+
+      // السبام
+      if (isGroup && !isOwner) {
+        const userIsAdmin = await isAdmin(sock, from, senderJid)
+        if (!userIsAdmin) {
+          const spamBlocked = await handleSpam(sock, from, msg, senderJid)
+          if (spamBlocked) return
+        }
+      }
+
+      // التنصيب
+      const installHandled = await handleInstall(sock, from, msg, text, senderJid, senderNum)
+      if (installHandled) return
+
+      // الألعاب
+      const gameHandled = await handleGameReply(sock, from, msg, text, senderJid)
+      if (gameHandled) return
+
+      // ملصقات القطط
+      if (matchCommand(text, ['ملصقات', 'قطط', 'cat', 'قطة'])) {
+        const catUrl = await getCatImage()
+        if (catUrl) {
+          return sock.sendMessage(from, { image: { url: catUrl }, caption: '🐱 *قطة عشوائية*' }, { quoted: msg })
+        }
+        return sock.sendMessage(from, { text: '❌ فشل جلب قطة' }, { quoted: msg })
+      }
+
+      // القائمة
+      if (matchCommand(text, COMMANDS.menu)) {
+        await sendListMessage(
+          sock, from, msg,
+          `❄️ *${BOT_NAME}* ❄️\n\n📌 اختر من القائمة:`,
+          'DARK BOT © 2026',
+          getMenuSections(),
+          '📋 عرض القائمة'
+        )
+        return
+      }
+
+      // ساسكي AI
+      if (text.startsWith('ساسكي ') || text.startsWith('.ساسكي ')) {
+        const q = text.replace(/^[.\/!#*]?\s*ساسكي\s*/, '').trim()
+        if (q.length >= 2) return askAI(sock, from, msg, q)
+      }
+
+      // تست
+      if (matchCommand(text, COMMANDS.ping)) {
+        const testVideos = ['test1.mp4', 'test2.mp4', 'test3.mp4']
+        const currentTest = global.testCounter || 0
+        const videoFile = testVideos[currentTest % testVideos.length]
+        global.testCounter = (currentTest + 1) % testVideos.length
+        const videoPath = path.join(__dirname, videoFile)
+
+        if (fs.existsSync(videoPath)) {
+          try {
+            await sock.sendMessage(from, { video: fs.readFileSync(videoPath), mimetype: 'video/mp4', ptv: true }, { quoted: msg })
+            return
+          } catch (e) {}
+        }
+        return sock.sendMessage(from, { text: '🏓 *تست*\n⚡ ' + formatUptime() }, { quoted: msg })
+      }
+
+      // المطور
+      if (matchCommand(text, COMMANDS.owner)) {
+        return sock.sendMessage(from, { text: '👑 *DARK*' }, { quoted: msg })
+      }
+
+      // فضح
+      if (matchCommand(text, ['فضح', 'reveal'])) return revealMedia(sock, from, msg)
+
+      // بروفايل
+      if (matchCommand(text, ['بروفايل', 'profile'])) return getProfile(sock, from, msg, getMentioned(msg))
+
+      // ستيكر
+      if (matchCommand(text, ['ستيكر', 'sticker', 'ملصق'])) return makeSticker(sock, from, msg)
+
+      // ذكاء
+      if (text.startsWith('ذكاء ') || text.startsWith('.ذكاء ')) {
+        const q = text.replace(/^[.\/!#*]?\s*ذكاء\s*/, '').trim()
+        if (q.length >= 2) return askAI(sock, from, msg, q)
+      }
+
+      // صور
+      if (text.startsWith('صور ') || text.startsWith('.صور ') || text.startsWith('ارسم ')) {
+        const q = text.replace(/^[.\/!#*]?\s*(صور|ارسم)\s*/, '').trim()
+        if (q.length >= 2) return generateImage(sock, from, msg, q)
+      }
+
+      // ترجم
+      if (text.startsWith('ترجم ') || text.startsWith('.ترجم ')) {
+        const q = text.replace(/^[.\/!#*]?\s*ترجم\s*/, '').trim()
+        if (q.length >= 1) return translate(sock, from, msg, q, 'en')
+      }
+
+      // انمي
+      if (matchCommand(text, ['انمي', 'anime'])) return randomAnimeImage(sock, from, msg, 'waifu')
+      if (matchCommand(text, ['نيكو', 'neko'])) return randomAnimeImage(sock, from, msg, 'neko')
+
+      // TikTok فيديو
+      if (text.startsWith('فيديو تيك ') || text.startsWith('.فيديو تيك ')) {
+        const url = text.replace(/^[.\/!#*]?\s*فيديو تيك\s*/, '').trim()
+        if (url.includes('tiktok.com') || url.includes('vt.tiktok')) {
+          return downloadTikTokVideo(sock, from, msg, url)
+        }
+        return sock.sendMessage(from, { text: '❌ ابعت لينك TikTok' }, { quoted: msg })
+      }
+
+      // TikTok صوت
+      if (text.startsWith('اغنية تيك ') || text.startsWith('.اغنية تيك ')) {
+        const url = text.replace(/^[.\/!#*]?\s*اغنية تيك\s*/, '').trim()
+        if (url.includes('tiktok.com') || url.includes('vt.tiktok')) {
+          return downloadTikTokAudio(sock, from, msg, url)
+        }
+        return sock.sendMessage(from, { text: '❌ ابعت لينك TikTok' }, { quoted: msg })
+      }
+
+      // منع فيديو يوتيوب
+      if (text.startsWith('فيديو يوتيوب') || text.startsWith('.فيديو يوتيوب')) {
+        return sock.sendMessage(from, { text: '🚫 *فيديو يوتيوب ممنوع*\n\n✅ استخدم: *اغنية [اسم]*' }, { quoted: msg })
+      }
+
+      // اغنية يوتيوب
+      if (text.startsWith('اغنية ') || text.startsWith('.اغنية ') || text.startsWith('اغنيه ') || text.startsWith('.اغنيه ') || text.startsWith('تحميل ') || text.startsWith('.تحميل ')) {
+        const q = text.replace(/^[.\/!#*]?\s*(اغنية|اغنيه|تحميل)\s*/, '').trim()
+        if (q.length >= 2) return searchMusic(sock, from, msg, q, sendListMessage)
+      }
+
+      // بحث
+      if (text.startsWith('بحث ') || text.startsWith('.بحث ')) {
+        const q = text.replace(/^[.\/!#*]?\s*بحث\s*/, '').trim()
+        if (q.length >= 2) return searchMusic(sock, from, msg, q, sendListMessage)
+      }
+
+      // ألعاب
+      if (matchCommand(text, ['نرد'])) return playDice(sock, from, msg)
+      if (matchCommand(text, ['تخمين'])) return playGuess(sock, from, msg, senderJid)
+      if (matchCommand(text, ['حجر ورقة مقص', 'حجر'])) return playRPS(sock, from, msg)
+      if (matchCommand(text, ['xo', 'XO'])) return playXO(sock, from, msg)
+      if (matchCommand(text, ['كلمة السر', 'كلمه السر'])) return playWord(sock, from, msg)
+      if (matchCommand(text, ['روليت'])) return playRoulette(sock, from, msg)
+      if (matchCommand(text, ['كوتشينة', 'كوتشينه'])) return playCards(sock, from, msg)
+      // أدوات
+      if (text.startsWith('زخرفة ') || text.startsWith('.زخرفة ')) {
+        const t = text.replace(/^[.\/!#*]?\s*زخرفة\s*/, '').trim()
+        if (t) return decorateText(sock, from, msg, t)
+      }
+      if (text.startsWith('عكس ') || text.startsWith('.عكس ')) {
+        const t = text.replace(/^[.\/!#*]?\s*عكس\s*/, '').trim()
+        if (t) return reverseText(sock, from, msg, t)
+      }
+      if (text.startsWith('احسب ') || text.startsWith('.احسب ')) {
+        const t = text.replace(/^[.\/!#*]?\s*احسب\s*/, '').trim()
+        if (t) return calcExpression(sock, from, msg, t)
+      }
+      if (matchCommand(text, ['اقتباس'])) return randomQuote(sock, from, msg)
+      if (matchCommand(text, ['نكتة'])) return randomJoke(sock, from, msg)
+      if (matchCommand(text, ['هل تعلم'])) return randomFact(sock, from, msg)
+
+      // أوامر الإدارة
+      if (isGroup) {
+        const userIsAdmin = isOwner || await isAdmin(sock, from, senderJid)
+        if (!global.db.data.chats[from]) global.db.data.chats[from] = {}
+        const chat = global.db.data.chats[from]
+
+        // الحماية
+        if (matchCommand(text, ['تفعيل_الروابط']) && userIsAdmin) return toggleProtection(sock, from, msg, chat, global.db, 'antilink', true)
+        if (matchCommand(text, ['تعطيل_الروابط']) && userIsAdmin) return toggleProtection(sock, from, msg, chat, global.db, 'antilink', false)
+        if (matchCommand(text, ['تفعيل_الشتائم']) && userIsAdmin) return toggleProtection(sock, from, msg, chat, global.db, 'antibad', true)
+        if (matchCommand(text, ['تعطيل_الشتائم']) && userIsAdmin) return toggleProtection(sock, from, msg, chat, global.db, 'antibad', false)
+        if (matchCommand(text, ['تفعيل_الاعلانات']) && userIsAdmin) return toggleProtection(sock, from, msg, chat, global.db, 'antiannounce', true)
+        if (matchCommand(text, ['تعطيل_الاعلانات']) && userIsAdmin) return toggleProtection(sock, from, msg, chat, global.db, 'antiannounce', false)
+        if (matchCommand(text, ['تفعيل_السبام']) && userIsAdmin) return toggleProtection(sock, from, msg, chat, global.db, 'antispam', true)
+        if (matchCommand(text, ['تعطيل_السبام']) && userIsAdmin) return toggleProtection(sock, from, msg, chat, global.db, 'antispam', false)
+        if (matchCommand(text, ['تفعيل_التحويل']) && userIsAdmin) return toggleProtection(sock, from, msg, chat, global.db, 'antiforward', true)
+        if (matchCommand(text, ['تعطيل_التحويل']) && userIsAdmin) return toggleProtection(sock, from, msg, chat, global.db, 'antiforward', false)
+        if (matchCommand(text, ['تفعيل_منع_الصور']) && userIsAdmin) return toggleProtection(sock, from, msg, chat, global.db, 'antinsfw', true)
+        if (matchCommand(text, ['تعطيل_منع_الصور']) && userIsAdmin) return toggleProtection(sock, from, msg, chat, global.db, 'antinsfw', false)
+        if (matchCommand(text, ['تفعيل_منع_الارقام']) && userIsAdmin) return toggleProtection(sock, from, msg, chat, global.db, 'antiphone', true)
+        if (matchCommand(text, ['تعطيل_منع_الارقام']) && userIsAdmin) return toggleProtection(sock, from, msg, chat, global.db, 'antiphone', false)
+        if (matchCommand(text, ['تفعيل_منع_الايميل']) && userIsAdmin) return toggleProtection(sock, from, msg, chat, global.db, 'antiemail', true)
+        if (matchCommand(text, ['تعطيل_منع_الايميل']) && userIsAdmin) return toggleProtection(sock, from, msg, chat, global.db, 'antiemail', false)
+	// ═══ منع الكلمات الممنوعة ═══
+if (matchCommand(text, ['اضف_كلمه']) && userIsAdmin) {
+  const word = text.replace(/^[.\/!#*]?\s*اضف_كلمه\s*/, '').trim()
+  if (!word) return sock.sendMessage(from, { text: '❌ اكتب الكلمة بعد الأمر\nمثال: .اضف_كلمه شتيمة' }, { quoted: msg })
+  
+  if (!chat.customWords) chat.customWords = []
+  if (chat.customWords.includes(word)) {
+    return sock.sendMessage(from, { text: '⚠️ الكلمة موجودة بالفعل' }, { quoted: msg })
+  }
+  chat.customWords.push(word)
+  return sock.sendMessage(from, { text: `✅ *تم إضافة:* ${word}\n📊 *عدد الكلمات الممنوعة:* ${chat.customWords.length}` }, { quoted: msg })
+}
+
+if (matchCommand(text, ['حذف_كلمه']) && userIsAdmin) {
+  const word = text.replace(/^[.\/!#*]?\s*حذف_كلمه\s*/, '').trim()
+  if (!word) return sock.sendMessage(from, { text: '❌ اكتب الكلمة\nمثال: .حذف_كلمه شتيمة' }, { quoted: msg })
+  
+  if (!chat.customWords || !chat.customWords.includes(word)) {
+    return sock.sendMessage(from, { text: '❌ الكلمة مش موجودة' }, { quoted: msg })
+  }
+  chat.customWords = chat.customWords.filter(w => w !== word)
+  return sock.sendMessage(from, { text: `✅ *تم حذف:* ${word}` }, { quoted: msg })
+}
+
+if (matchCommand(text, ['الكلمات_الممنوعه', 'الكلمات_الممنوعة']) && userIsAdmin) {
+  if (!chat.customWords || chat.customWords.length === 0) {
+    return sock.sendMessage(from, { text: '📭 مفيش كلمات ممنوعة' }, { quoted: msg })
+  }
+  let list = '🚫 *الكلمات الممنوعة:*\n\n'
+  chat.customWords.forEach((w, i) => { list += `${i + 1}. ${w}\n` })
+  return sock.sendMessage(from, { text: list }, { quoted: msg })
+}
+
+if (matchCommand(text, ['تفعيل_الكلمات']) && userIsAdmin) {
+  chat.customWordsEnabled = true
+  return sock.sendMessage(from, { text: '✅ *تم تفعيل منع الكلمات الممنوعة*' }, { quoted: msg })
+}
+if (matchCommand(text, ['تعطيل_الكلمات']) && userIsAdmin) {
+  chat.customWordsEnabled = false
+  return sock.sendMessage(from, { text: '🔒 *تم تعطيل منع الكلمات الممنوعة*' }, { quoted: msg })
+}
+        // حماية كاملة (للمطور)
+        if (matchCommand(text, ['حمايه', 'حماية']) && isOwner) {
+          chat.antilink = true
+          chat.antibad = true
+          chat.antiannounce = true
+          chat.antispam = true
+          chat.antiforward = true
+          chat.antinsfw = true
+          chat.antiphone = true
+          chat.antiemail = true
+          return sock.sendMessage(from, { text: '🛡️ *تم تفعيل الحماية الكاملة*\n\n✅ منع الروابط\n✅ منع الشتائم\n✅ منع الإعلانات\n✅ منع السبام\n✅ منع التحويل\n✅ منع الصور\n✅ منع الأرقام\n✅ منع الإيميلات' }, { quoted: msg })
+        }
+
+        // تعطيل الحماية الكاملة (للمطور)
+        if (matchCommand(text, ['الغاء_حمايه', 'الغاء_حماية']) && isOwner) {
+          chat.antilink = false
+          chat.antibad = false
+          chat.antiannounce = false
+          chat.antispam = false
+          chat.antiforward = false
+          chat.antinsfw = false
+          chat.antiphone = false
+          chat.antiemail = false
+          return sock.sendMessage(from, { text: '🔓 *تم تعطيل الحماية الكاملة*' }, { quoted: msg })
+        }
+
+        // الترحيب
+        if (matchCommand(text, ['تفعيل_الترحيب']) && userIsAdmin) return handleWelcomeToggle(sock, from, msg, true, global.db)
+        if (matchCommand(text, ['تعطيل_الترحيب']) && userIsAdmin) return handleWelcomeToggle(sock, from, msg, false, global.db)
+
+        if (text.startsWith('ترحيب ') || text.startsWith('.ترحيب ')) {
+          if (!userIsAdmin) return
+          const t = text.replace(/^[.\/!#*]?\s*ترحيب\s*/, '').trim()
+          return setWelcomeMessage(sock, from, msg, t)
+        }
+
+        // أوامر الأدمن
+        if (matchCommand(text, ['لينك', 'رابط']) && userIsAdmin) {
+          try {
+            const code = await sock.groupInviteCode(from)
+            return sock.sendMessage(from, { image: { url: getRandomImage() }, caption: '🔗 *رابط الجروب:*\nhttps://chat.whatsapp.com/' + code }, { quoted: msg })
+          } catch (e) {
+            return sock.sendMessage(from, { text: '❌ فشل' }, { quoted: msg })
+          }
+        }
+
+        if (matchCommand(text, ['اقفل', 'قفل']) && userIsAdmin) return muteGroup(sock, from, msg)
+        if (matchCommand(text, ['افتح', 'فتح']) && userIsAdmin) return unmuteGroup(sock, from, msg)
+
+        if (matchCommand(text, ['ارفع', 'ترقية']) && userIsAdmin) {
+          const target = getMentioned(msg)
+          if (!target) return sock.sendMessage(from, { text: '❌ اعمل منشن' }, { quoted: msg })
+          try { await sock.groupParticipantsUpdate(from, [target], 'promote') } catch (e) {}
+          return sock.sendMessage(from, { text: '✅ تم الترقية', mentions: [target] }, { quoted: msg })
+        }
+
+        if (matchCommand(text, ['انزل', 'تنزيل']) && userIsAdmin) {
+          const target = getMentioned(msg)
+          if (!target) return sock.sendMessage(from, { text: '❌ اعمل منشن' }, { quoted: msg })
+          try { await sock.groupParticipantsUpdate(from, [target], 'demote') } catch (e) {}
+          return sock.sendMessage(from, { text: '✅ تم التنزيل', mentions: [target] }, { quoted: msg })
+        }
+
+        if (matchCommand(text, ['بوست']) && userIsAdmin) {
+          const t = text.replace(/^[.\/!#*]?\s*بوست\s*/, '').trim()
+          if (!t) return sock.sendMessage(from, { text: '❌ اكتب النص' }, { quoted: msg })
+          await sock.sendMessage(from, { text: `📢 *إعلان*\n\n${t}` }, { quoted: msg })
+          return
+        }
+
+        if (matchCommand(text, ['مخفي']) && isOwner) return hiddenMention(sock, from, msg, isOwner)
+        if (matchCommand(text, ['on']) && isOwner) return sock.sendMessage(from, { text: '✅ شغال' }, { quoted: msg })
+        if (matchCommand(text, ['off']) && isOwner) return sock.sendMessage(from, { text: '🔒 متوقف' }, { quoted: msg })
+
+        if (matchCommand(text, ['الاشباح']) && userIsAdmin) {
+          try {
+            const metadata = await sock.groupMetadata(from)
+            const ghosts = metadata.participants.filter(p => !p.admin)
+            await sock.sendMessage(from, {
+              image: { url: getRandomImage() },
+              caption: `👻 *الأشباح:* ${ghosts.length}\n\n${ghosts.map(p => '@' + p.id.split('@')[0]).join('\n')}`,
+              mentions: ghosts.map(p => p.id)
+            }, { quoted: msg })
+          } catch (e) {}
+          return
+        }
+
+        if (matchCommand(text, ['المشرفين']) && userIsAdmin) {
+          try {
+            const metadata = await sock.groupMetadata(from)
+            const admins = metadata.participants.filter(p => p.admin)
+            await sock.sendMessage(from, {
+              image: { url: getRandomImage() },
+              caption: `👑 *المشرفين:* ${admins.length}\n\n${admins.map(p => '@' + p.id.split('@')[0]).join('\n')}`,
+              mentions: admins.map(p => p.id)
+            }, { quoted: msg })
+          } catch (e) {}
+          return
+        }
+
+        if (matchCommand(text, ['طرد']) && userIsAdmin) {
+          const target = getMentioned(msg)
+          if (!target) return sock.sendMessage(from, { text: '❌ اعمل منشن' }, { quoted: msg })
+          const targetNum = target.split('@')[0]
+          const ppUrl = await getProfilePic(sock, target)
+          const kickMsg = `*联 تـم طـرد الـعـضـو بـنـجـاح ⚡ ۪ ۫۫ 〙*\n\n*🝮︎︎︎︎︎︎︎ الـعـضـو الـمـطـرود ˼‏👤˹ ⇣*\n* *•「 @${targetNum} 」•*\n\n*🝮︎︎︎︎︎︎︎ الـمـشـرف الـمـنـفـذ ˼‏👑˹ ⇣*\n* *•「 @${senderNum} 」•*\n\n* *♢ •┆˹🪸╵ \`𝙼𝙰𝙳𝙴 𝙱𝚈 𝙳𝙰𝚁𝙺\`╷⇊˼*`
+          try {
+            if (ppUrl) {
+              await sock.sendMessage(from, { image: { url: ppUrl }, caption: kickMsg, mentions: [target, senderJid] })
+            } else {
+              await sock.sendMessage(from, { text: kickMsg, mentions: [target, senderJid] })
+            }
+          } catch (e) {}
+          setTimeout(async () => { try { await sock.groupParticipantsUpdate(from, [target], 'remove') } catch (e) {} }, 2000)
+          return
+        }
+
+        if (matchCommand(text, ['كتم']) && userIsAdmin) {
+          const target = getMentioned(msg)
+          if (!target) return sock.sendMessage(from, { text: '❌ اعمل منشن' }, { quoted: msg })
+          global.mutedUsers.set(target, { by: senderJid, time: Date.now() })
+          return sock.sendMessage(from, { text: `🔇 *تم كتم*\n\n👤 @${target.split('@')[0]}\n👑 @${senderNum}`, mentions: [target, senderJid] }, { quoted: msg })
+        }
+
+        if (matchCommand(text, ['فك_كتم', 'فك_الكتم']) && userIsAdmin) {
+          const target = getMentioned(msg)
+          if (!target) return sock.sendMessage(from, { text: '❌ اعمل منشن' }, { quoted: msg })
+          global.mutedUsers.delete(target)
+          return sock.sendMessage(from, { text: `🔊 *تم فك الكتم*\n\n👤 @${target.split('@')[0]}`, mentions: [target] }, { quoted: msg })
+        }
+
+        if (matchCommand(text, ['الوصف']) && userIsAdmin) {
+          const desc = await getGroupDesc(sock, from)
+          return sock.sendMessage(from, { image: { url: getRandomImage() }, caption: `📝 *الوصف:*\n\n${desc}` }, { quoted: msg })
+        }
+
+        if (matchCommand(text, ['تحذير']) && userIsAdmin) {
+          const target = getMentioned(msg)
+          if (!target) return sock.sendMessage(from, { text: '❌ اعمل منشن' }, { quoted: msg })
+          return sock.sendMessage(from, { text: `⚠️ *تم تحذير*\n\n👤 @${target.split('@')[0]}\n👑 @${senderNum}`, mentions: [target, senderJid] }, { quoted: msg })
+        }
+
+        if (matchCommand(text, ['بروفايله']) && userIsAdmin) return getProfile(sock, from, msg, getMentioned(msg))
+        if (matchCommand(text, ['حذف_الانذارات']) && userIsAdmin) return pardon(sock, from, msg, getMentioned(msg))
+        if (matchCommand(text, ['الانذارات']) && userIsAdmin) return listWarns(sock, from, msg, getMentioned(msg))
+
+        if (matchCommand(text, ['صورته']) && userIsAdmin) {
+          const target = getMentioned(msg)
+          if (!target) return sock.sendMessage(from, { text: '❌ اعمل منشن' }, { quoted: msg })
+          try {
+            const ppUrl = await sock.profilePictureUrl(target, 'image')
+            await sock.sendMessage(from, { image: { url: ppUrl }, caption: '📷 @' + target.split('@')[0], mentions: [target] }, { quoted: msg })
+          } catch (e) {
+            await sock.sendMessage(from, { text: '❌ مفيش صورة' }, { quoted: msg })
+          }
+          return
+        }
+
+        if (matchCommand(text, ['حذف', 'مسح']) && userIsAdmin) return deleteMessage(sock, from, msg)
+        if (matchCommand(text, ['منشن']) && userIsAdmin) return mentionAll(sock, from, msg)
+        if (matchCommand(text, ['جروب']) && userIsAdmin) return groupInfo(sock, from, msg)
+        if (matchCommand(text, ['اعفاء']) && userIsAdmin) return pardon(sock, from, msg, getMentioned(msg))
+      }
+
+    } catch (err) {
+      console.log('❌ خطأ: ' + err.message)
+    }
+  })
+}
+
+process.on('uncaughtException', (err) => console.log('❌ ' + err.message))
+process.on('unhandledRejection', (err) => console.log('❌ ' + (err?.message || err)))
+
+startBot().catch(err => console.error('❌ ' + err.message))
